@@ -1,5 +1,5 @@
 {
-  "apiBaseUrl": "https://supermarket-management-backend-production.up.railway.app/api/v1",
+  "apiBaseUrl": "https://supermarket-management-backend-basualdo-production.up.railway.app/api/v1",
   "frontendDevUrl": "http://localhost:3000",
   "updates": {
     "enabled": true,
