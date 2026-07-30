@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "../../db";
 import { getOfflineState } from "../../offline-state";
+import { getConnectivityState, setConnectivityState, resetConnectivityState } from "../../connectivity-state";
 import { BootstrapSqliteRepository } from "./bootstrap-sqlite-repository";
 import type { BootstrapSnapshot } from "../../domain/bootstrap/bootstrap";
 import type { BootstrapResult } from "../../domain/bootstrap/bootstrap";
@@ -419,7 +420,7 @@ describe("BootstrapSqliteRepository", () => {
       vi.restoreAllMocks();
     });
 
-    it("calls the backend with correct method, headers, and no timeout", async () => {
+    it("calls the backend with correct method, headers, and a timeout signal", async () => {
       const snapshot = makeSnapshot();
       const fetchSpy = vi.fn().mockResolvedValue({
         ok: true,
@@ -430,13 +431,17 @@ describe("BootstrapSqliteRepository", () => {
 
       await repo.start("test-token", MOCK_BACKEND_URL);
 
-      expect(fetchSpy).toHaveBeenCalledWith(`${MOCK_BACKEND_URL}/sync/bootstrap`, {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer test-token",
-          "Content-Type": "application/json",
-        },
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`${MOCK_BACKEND_URL}/sync/bootstrap`);
+      expect(init.method).toBe("POST");
+      expect(init.headers).toEqual({
+        Authorization: "Bearer test-token",
+        "Content-Type": "application/json",
       });
+      // PR2: bootstrap fetch MUST include an AbortSignal for bounded timeout
+      expect(init.signal).toBeDefined();
+      expect(init.signal).toBeInstanceOf(AbortSignal);
 
       globalThis.fetch = originalFetch;
     });
@@ -523,6 +528,27 @@ describe("BootstrapSqliteRepository", () => {
 
       expect(result.status).toBe("failed");
       expect(result.error).toBe("Unknown bootstrap error");
+
+      globalThis.fetch = originalFetch;
+    });
+
+    it("returns failed status when bootstrap fetch aborts from timeout", async () => {
+      const originalFetch = globalThis.fetch;
+      // Simulate a fetch that rejects with an AbortError (DOMException)
+      globalThis.fetch = vi.fn().mockRejectedValue(
+        new DOMException("The operation was aborted", "AbortError"),
+      );
+
+      setConnectivityState("online");
+      const result = await repo.start("token", MOCK_BACKEND_URL);
+
+      expect(result.status).toBe("failed");
+      expect(result.ready).toBe(false);
+      // AbortError message should be preserved in the error field
+      expect(result.error).toBe("The operation was aborted");
+
+      const state = getOfflineState(db);
+      expect(state.bootstrap).toBe("failed");
 
       globalThis.fetch = originalFetch;
     });

@@ -24,7 +24,7 @@ vi.mock("electron", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Imports — will fail (RED) until production modules exist
+// Imports — some will fail (RED) until production modules exist
 // ---------------------------------------------------------------------------
 
 import { ipcMain } from "electron";
@@ -97,13 +97,17 @@ describe("OFFLINE_CHANNELS", () => {
     expect(OFFLINE_CHANNELS.GET_STATE).toBe("offline:get-state");
     expect(OFFLINE_CHANNELS.GET_SESSION).toBe("offline:get-session");
     expect(OFFLINE_CHANNELS.LOGIN).toBe("offline:login");
+    // RED: CHECK_CONNECTIVITY does not exist yet — this will fail until the channel is added.
+    expect(OFFLINE_CHANNELS.CHECK_CONNECTIVITY).toBe("offline:connectivity:check");
   });
 
   it("is readonly (as const)", () => {
-    expect(Object.keys(OFFLINE_CHANNELS)).toHaveLength(3);
+    // RED: CHECK_CONNECTIVITY does not exist yet — this will fail until the channel is added.
+    expect(Object.keys(OFFLINE_CHANNELS)).toHaveLength(4);
     expect(OFFLINE_CHANNELS).toHaveProperty("GET_STATE");
     expect(OFFLINE_CHANNELS).toHaveProperty("GET_SESSION");
     expect(OFFLINE_CHANNELS).toHaveProperty("LOGIN");
+    expect(OFFLINE_CHANNELS).toHaveProperty("CHECK_CONNECTIVITY");
   });
 });
 
@@ -280,7 +284,7 @@ describe("unregisterOfflineIpc", () => {
     registerOfflineIpc(service);
   });
 
-  it("removes all three handlers", () => {
+  it("removes all handlers", () => {
     expect(getHandler(OFFLINE_CHANNELS.GET_STATE)).toBeDefined();
     expect(getHandler(OFFLINE_CHANNELS.GET_SESSION)).toBeDefined();
     expect(getHandler(OFFLINE_CHANNELS.LOGIN)).toBeDefined();
@@ -297,5 +301,112 @@ describe("unregisterOfflineIpc", () => {
       OFFLINE_CHANNELS.LOGIN,
     );
     expect(mockIpcMain._handlers.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connectivity check IPC (RED — registerConnectivityIpc does not exist yet)
+// ---------------------------------------------------------------------------
+
+describe("registerConnectivityIpc (RED — function not yet created)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIpcMain._handlers.clear();
+  });
+
+  afterEach(() => {
+    try {
+      // Dynamic import — unregister may not exist yet in RED phase.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require("./offline-ipc") as typeof import("./offline-ipc");
+      if (typeof (mod as Record<string, unknown>).unregisterConnectivityIpc === "function") {
+        (mod as unknown as { unregisterConnectivityIpc: () => void }).unregisterConnectivityIpc();
+      }
+    } catch {
+      // Best effort.
+    }
+  });
+
+  it("CHECK_CONNECTIVITY channel name is 'offline:connectivity:check'", () => {
+    expect(OFFLINE_CHANNELS.CHECK_CONNECTIVITY).toBe("offline:connectivity:check");
+  });
+
+  it("registerConnectivityIpc registers a handler for offline:connectivity:check", async () => {
+    // Dynamic import — the function won't exist yet in RED phase.
+    const mod = await import("./offline-ipc");
+
+    // In RED phase, registerConnectivityIpc may not exist.
+    if (typeof (mod as Record<string, unknown>).registerConnectivityIpc !== "function") {
+      // Expected RED failure — the function doesn't exist yet.
+      expect((mod as Record<string, unknown>).registerConnectivityIpc).toBeDefined();
+      return;
+    }
+
+    const { registerConnectivityIpc } = mod as unknown as {
+      registerConnectivityIpc: (checkFn: (params: { apiBaseUrl: string }) => Promise<unknown>) => void;
+    };
+
+    const mockCheckFn = vi.fn().mockResolvedValue({ connectivity: "online" });
+    registerConnectivityIpc(mockCheckFn);
+
+    expect(mockIpcMain.handle).toHaveBeenCalledWith(
+      OFFLINE_CHANNELS.CHECK_CONNECTIVITY,
+      expect.any(Function),
+    );
+
+    const handler = getHandler(OFFLINE_CHANNELS.CHECK_CONNECTIVITY);
+    expect(handler).toBeDefined();
+    expect(typeof handler).toBe("function");
+  });
+
+  it("check-connectivity handler delegates to the provided check function without renderer params", async () => {
+    const mod = await import("./offline-ipc");
+    if (typeof (mod as Record<string, unknown>).registerConnectivityIpc !== "function") {
+      expect((mod as Record<string, unknown>).registerConnectivityIpc).toBeDefined();
+      return;
+    }
+
+    const { registerConnectivityIpc } = mod as unknown as {
+      registerConnectivityIpc: (checkFn: () => Promise<unknown>) => void;
+    };
+
+    const mockCheckFn = vi.fn().mockResolvedValue({ connectivity: "online" });
+    registerConnectivityIpc(mockCheckFn);
+
+    const handler = getHandler(OFFLINE_CHANNELS.CHECK_CONNECTIVITY);
+    const result = await handler(null, { apiBaseUrl: "http://malicious.example" });
+
+    expect(mockCheckFn).toHaveBeenCalledWith();
+    expect(result).toEqual({ connectivity: "online" });
+  });
+
+  it("unregisterConnectivityIpc removes the handler", async () => {
+    const mod = await import("./offline-ipc");
+    if (
+      typeof (mod as Record<string, unknown>).registerConnectivityIpc !== "function" ||
+      typeof (mod as Record<string, unknown>).unregisterConnectivityIpc !== "function"
+    ) {
+      expect((mod as Record<string, unknown>).unregisterConnectivityIpc).toBeDefined();
+      return;
+    }
+
+    const {
+      registerConnectivityIpc,
+      unregisterConnectivityIpc,
+    } = mod as unknown as {
+      registerConnectivityIpc: (checkFn: (params: { apiBaseUrl: string }) => Promise<unknown>) => void;
+      unregisterConnectivityIpc: () => void;
+    };
+
+    const mockCheckFn = vi.fn().mockResolvedValue({ connectivity: "online" });
+    registerConnectivityIpc(mockCheckFn);
+
+    expect(getHandler(OFFLINE_CHANNELS.CHECK_CONNECTIVITY)).toBeDefined();
+
+    unregisterConnectivityIpc();
+
+    expect(mockIpcMain.removeHandler).toHaveBeenCalledWith(
+      OFFLINE_CHANNELS.CHECK_CONNECTIVITY,
+    );
   });
 });

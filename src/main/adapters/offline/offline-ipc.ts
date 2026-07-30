@@ -59,3 +59,28 @@ export function unregisterOfflineIpc(): void {
   ipcMain.removeHandler(OFFLINE_CHANNELS.GET_SESSION);
   ipcMain.removeHandler(OFFLINE_CHANNELS.LOGIN);
 }
+
+// ---------------------------------------------------------------------------
+// Connectivity check IPC (optional)
+// ---------------------------------------------------------------------------
+
+/**
+ * Register the manual connectivity-check IPC handler.
+ *
+ * Accepts a check function so the handler remains decoupled from the
+ * concrete checker implementation.
+ */
+export function registerConnectivityIpc(
+  checkFn: () => Promise<{ connectivity: string }>,
+): void {
+  ipcMain.handle(OFFLINE_CHANNELS.CHECK_CONNECTIVITY, async () => {
+    return checkFn();
+  });
+}
+
+/**
+ * Remove the connectivity-check IPC handler.
+ */
+export function unregisterConnectivityIpc(): void {
+  ipcMain.removeHandler(OFFLINE_CHANNELS.CHECK_CONNECTIVITY);
+}

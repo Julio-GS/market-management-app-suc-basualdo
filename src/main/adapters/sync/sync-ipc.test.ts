@@ -559,4 +559,181 @@ describe("sync-ipc", () => {
       expect(getConnectivityState()).toBe("offline");
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Fetch timeouts — PR2: bounded timeout signals on sync/revalidate fetches
+  // -----------------------------------------------------------------------
+
+  describe("fetch timeouts", () => {
+    it("push fetch call includes an AbortSignal for bounded timeout", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ results: [] }), { status: 200 }),
+      );
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      const pushFn = createBackendPushFn("http://localhost:3000/api/v1", "test-token");
+      await pushFn([buildEntry()]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [_url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      // PR2: push fetch MUST include an AbortSignal for bounded timeout
+      expect(init.signal).toBeDefined();
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("pull fetch call includes an AbortSignal for bounded timeout", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ changes: [], next_cursor: null, has_more: false }), {
+          status: 200,
+        }),
+      );
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      mockPullAndApply.mockImplementation(async (_db, pullFn) => pullFn());
+
+      const getDb = vi.fn().mockReturnValue({});
+      registerSyncIpc(getDb);
+
+      const handler = getHandler(SYNC_CHANNELS.PULL);
+      await handler({}, { apiBaseUrl: "http://localhost:3000/api/v1", token: "test-token" });
+
+      expect(fetchMock).toHaveBeenCalled();
+      // Find the pull fetch call (the handler may make other fetch calls via mock)
+      const pullCalls = fetchMock.mock.calls.filter(
+        (call: unknown[]) => String(call[0]).includes("/sync/pull"),
+      );
+      expect(pullCalls.length).toBeGreaterThanOrEqual(1);
+      const [_url, init] = pullCalls[0] as [string, RequestInit];
+      // PR2: pull fetch MUST include an AbortSignal for bounded timeout
+      expect(init.signal).toBeDefined();
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("revalidate fetch call includes an AbortSignal for bounded timeout", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ valid: true, user_id: "user-1" }), {
+          status: 200,
+        }),
+      );
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      mockReplayOutbox.mockImplementation(async (_db, _pushFn, revalidateFn) => {
+        await revalidateFn("user-1");
+        return {
+          synced: 0,
+          failed: 0,
+          blocked: 0,
+          skipped: 0,
+          revalidationBlocked: false,
+        };
+      });
+
+      const getDb = vi.fn().mockReturnValue({});
+      registerSyncIpc(getDb);
+
+      const handler = getHandler(SYNC_CHANNELS.START_SYNC);
+      await handler({}, { apiBaseUrl: "http://localhost:3000/api/v1", token: "test-token" });
+
+      // Find the revalidate fetch call
+      const revalCalls = fetchMock.mock.calls.filter(
+        (call: unknown[]) => String(call[0]).includes("/auth/revalidate"),
+      );
+      expect(revalCalls.length).toBeGreaterThanOrEqual(1);
+      const [_url, init] = revalCalls[0] as [string, RequestInit];
+      // PR2: revalidate fetch MUST include an AbortSignal for bounded timeout
+      expect(init.signal).toBeDefined();
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("push marks connectivity offline and throws on aborted fetch", async () => {
+      global.fetch = vi.fn().mockRejectedValue(
+        new DOMException("The operation was aborted", "AbortError"),
+      ) as unknown as typeof global.fetch;
+
+      setConnectivityState("online");
+      const pushFn = createBackendPushFn("http://localhost:3000/api/v1", "test-token");
+
+      await expect(pushFn([buildEntry()])).rejects.toThrow();
+      expect(getConnectivityState()).toBe("offline");
+    });
+
+    it("pull marks connectivity offline and throws on aborted fetch", async () => {
+      global.fetch = vi.fn().mockRejectedValue(
+        new DOMException("The operation was aborted", "AbortError"),
+      ) as unknown as typeof global.fetch;
+
+      mockPullAndApply.mockImplementation(async (_db, pullFn) => pullFn());
+      setConnectivityState("online");
+
+      const getDb = vi.fn().mockReturnValue({});
+      registerSyncIpc(getDb);
+
+      const handler = getHandler(SYNC_CHANNELS.PULL);
+      await handler({}, { apiBaseUrl: "http://localhost:3000/api/v1", token: "test-token" });
+
+      expect(getConnectivityState()).toBe("offline");
+    });
+
+    it("revalidate returns invalid and marks offline on aborted fetch (not 401)", async () => {
+      global.fetch = vi.fn().mockRejectedValue(
+        new DOMException("The operation was aborted", "AbortError"),
+      ) as unknown as typeof global.fetch;
+
+      let revalidateResult: { valid: boolean; user_id: string; reason?: string } | null = null;
+      mockReplayOutbox.mockImplementation(async (_db, _pushFn, revalidateFn) => {
+        revalidateResult = await revalidateFn("user-1");
+        return {
+          synced: 0,
+          failed: 0,
+          blocked: 0,
+          skipped: 0,
+          revalidationBlocked: true,
+        };
+      });
+
+      setConnectivityState("online");
+      const getDb = vi.fn().mockReturnValue({});
+      registerSyncIpc(getDb);
+
+      const handler = getHandler(SYNC_CHANNELS.START_SYNC);
+      await handler({}, { apiBaseUrl: "http://localhost:3000/api/v1", token: "test-token" });
+
+      expect(revalidateResult).not.toBeNull();
+      expect(revalidateResult!.valid).toBe(false);
+      expect(revalidateResult!.reason).toBeDefined();
+      expect(getConnectivityState()).toBe("offline");
+    });
+
+    it("keeps connectivity online on 401 revalidate (preserves auth-invalid semantics)", async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: "Unauthorized" }), {
+          status: 401,
+          statusText: "Unauthorized",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ) as unknown as typeof global.fetch;
+
+      mockReplayOutbox.mockImplementation(async (_db, _pushFn, revalidateFn) => {
+        const result = await revalidateFn("user-1");
+        expect(result.valid).toBe(false);
+        return {
+          synced: 0,
+          failed: 0,
+          blocked: 0,
+          skipped: 0,
+          revalidationBlocked: true,
+        };
+      });
+
+      setConnectivityState("online");
+      const getDb = vi.fn().mockReturnValue({});
+      registerSyncIpc(getDb);
+
+      const handler = getHandler(SYNC_CHANNELS.START_SYNC);
+      await handler({}, { apiBaseUrl: "http://localhost:3000/api/v1", token: "test-token" });
+
+      // 401 is an auth error, NOT a connectivity error — stay online
+      expect(getConnectivityState()).toBe("online");
+    });
+  });
 });

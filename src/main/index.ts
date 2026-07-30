@@ -9,7 +9,12 @@ import { checkForUpdatesOnStartup, registerUpdaterIpc, unregisterUpdaterIpc } fr
 import { createBusyTracker } from "./busy-state";
 import { getUpdateStatus } from "./updater-status";
 import { getDatabasePath, openDatabase, runMigrations, closeDatabase } from "./db";
-import { registerOfflineIpc, unregisterOfflineIpc } from "./adapters/offline/offline-ipc";
+import {
+  registerOfflineIpc,
+  unregisterOfflineIpc,
+  registerConnectivityIpc,
+  unregisterConnectivityIpc,
+} from "./adapters/offline/offline-ipc";
 import { OfflineService } from "./application/offline/offline-service";
 import { OfflineSqliteRepository } from "./infrastructure/persistence/offline-sqlite-repository";
 import { registerBootstrapIpc, unregisterBootstrapIpc } from "./adapters/bootstrap/bootstrap-ipc";
@@ -18,7 +23,7 @@ import { BootstrapSqliteRepository } from "./infrastructure/persistence/bootstra
 import { registerSalesIpc, unregisterSalesIpc } from "./adapters/sales/sales-ipc";
 import { SaleService } from "./application/sales/sale-service";
 import { SalesSqliteRepository } from "./infrastructure/persistence/sales-sqlite-repository";
-import { registerSyncIpc, unregisterSyncIpc, createBackendPushFn } from "./adapters/sync/sync-ipc";
+import { registerSyncIpc, unregisterSyncIpc, createBackendPushFn, createBackendRevalidateFn } from "./adapters/sync/sync-ipc";
 import { registerProductsIpc, unregisterProductsIpc } from "./adapters/products/products-ipc";
 import { registerPromotionsIpc, unregisterPromotionsIpc } from "./adapters/promotions/promotions-ipc";
 import { registerStockIpc, unregisterStockIpc } from "./adapters/stock/stock-ipc";
@@ -38,7 +43,8 @@ import { registerSupportIpc, unregisterSupportIpc } from "./adapters/support/sup
 import { SupportService } from "./application/support/support-service";
 import { SupportSqliteRepository } from "./infrastructure/persistence/support-sqlite-repository";
 import { onConnectivityChange } from "./connectivity-state";
-import { replayOutbox, recoverStaleInFlightEntries, type RevalidateFn } from "./sync-engine";
+import { startStartupConnectivityDetection, manualRetryConnectivity } from "./connectivity-check";
+import { replayOutbox, recoverStaleInFlightEntries } from "./sync-engine";
 import { seedDefaultAdmin } from "./offline-auth";
 
 /** Cached auth params supplied by the renderer for automatic sync on reconnect. */
@@ -89,6 +95,7 @@ function getDb(): Database.Database {
 function initDatabase(
   userDataPath: string,
   integrityCheckOnStartup: boolean,
+  apiBaseUrl: string,
   defaultAdmin?: { username: string; password: string },
 ): void {
   const dbPath = getDatabasePath(userDataPath);
@@ -180,6 +187,14 @@ function initDatabase(
   registerSupportIpc(supportService, busyTracker);
 
   // -------------------------------------------------------------------
+      // -------------------------------------------------------------------
+      // Connectivity check IPC — manual retry from the renderer
+      // -------------------------------------------------------------------
+      registerConnectivityIpc(async () => {
+        const result = await manualRetryConnectivity(apiBaseUrl);
+        return { connectivity: result };
+      });
+
   // Connectivity-change listener: trigger whole-outbox sync on reconnect
   // -------------------------------------------------------------------
   onConnectivityChange((next, previous) => {
@@ -191,15 +206,7 @@ function initDatabase(
         try {
           const d = getDb();
           const pushFn = createBackendPushFn(auth.apiBaseUrl, auth.token);
-          const revalidateFn: RevalidateFn = (userId: string) =>
-            fetch(`${auth.apiBaseUrl}/auth/revalidate`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${auth.token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ user_id: userId }),
-            }).then((r) => r.json()) as ReturnType<RevalidateFn>;
+          const revalidateFn = createBackendRevalidateFn(auth.apiBaseUrl, auth.token);
           // Fire-and-forget — don't block the connectivity monitor
           replayOutbox(d, pushFn, revalidateFn).catch((err) =>
             log.error("Reconnect sync failed", err),
@@ -223,6 +230,7 @@ function shutdownDatabase(): void {
   unregisterPromotionsIpc();
   unregisterStockIpc();
   unregisterProductsIpc();
+      unregisterConnectivityIpc();
   unregisterOfflineIpc();
   unregisterBootstrapIpc();
   unregisterSalesIpc();
@@ -373,8 +381,12 @@ if (!hasSingleInstanceLock) {
     initDatabase(
       app.getPath("userData"),
       config.offline.integrityCheckOnStartup,
+      config.apiBaseUrl,
       config.offline.defaultAdmin,
     );
+
+        // Start proactive connectivity detection before the renderer loads.
+        startStartupConnectivityDetection(config.apiBaseUrl);
 
     await createWindow();
 

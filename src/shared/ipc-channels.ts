@@ -10,6 +10,7 @@ export const OFFLINE_CHANNELS = {
   GET_STATE: "offline:get-state",
   GET_SESSION: "offline:get-session",
   LOGIN: "offline:login",
+  CHECK_CONNECTIVITY: "offline:connectivity:check",
 } as const;
 
 export const BOOTSTRAP_CHANNELS = {

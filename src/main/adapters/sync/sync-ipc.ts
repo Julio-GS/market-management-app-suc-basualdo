@@ -25,6 +25,7 @@ import {
 } from "../../pull-reconciliation";
 import type { BusyTracker } from "../../busy-state";
 import { setConnectivityState } from "../../connectivity-state";
+import { fetchWithTimeout, SYNC_FETCH_TIMEOUT_MS, REVALIDATE_FETCH_TIMEOUT_MS } from "../../fetch-timeout";
 
 export { SYNC_CHANNELS };
 
@@ -58,12 +59,16 @@ function createBackendPullFn(
     const fetchUrl = `${url}?${params.toString()}`;
 
     try {
-      const response = await fetch(fetchUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+      const response = await fetchWithTimeout(
+        fetchUrl,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
         },
-      });
+        SYNC_FETCH_TIMEOUT_MS,
+      );
 
       if (!response.ok) {
         const details = await readResponseDetails(response);
@@ -92,26 +97,30 @@ export function createBackendPushFn(
 
   return async (entries) => {
     try {
-      const response = await fetch(`${base}/sync/push`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+      const response = await fetchWithTimeout(
+        `${base}/sync/push`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            entries: entries.map((e) => ({
+              id: e.id,
+              idempotency_key: e.idempotency_key,
+              operation_type: e.operation_type,
+              aggregate_type: e.aggregate_type,
+              aggregate_id: e.aggregate_id,
+              payload: JSON.parse(e.payload),
+              base_server_version: e.base_server_version,
+              actor_user_id: e.actor_user_id,
+              created_at: e.created_at,
+            })),
+          }),
         },
-        body: JSON.stringify({
-          entries: entries.map((e) => ({
-            id: e.id,
-            idempotency_key: e.idempotency_key,
-            operation_type: e.operation_type,
-            aggregate_type: e.aggregate_type,
-            aggregate_id: e.aggregate_id,
-            payload: JSON.parse(e.payload),
-            base_server_version: e.base_server_version,
-            actor_user_id: e.actor_user_id,
-            created_at: e.created_at,
-          })),
-        }),
-      });
+        SYNC_FETCH_TIMEOUT_MS,
+      );
 
       if (!response.ok) {
         const details = await readResponseDetails(response);
@@ -128,7 +137,7 @@ export function createBackendPushFn(
   };
 }
 
-function createBackendRevalidateFn(
+export function createBackendRevalidateFn(
   apiBaseUrl: string,
   token: string,
 ): RevalidateFn {
@@ -136,14 +145,18 @@ function createBackendRevalidateFn(
 
   return async (userId) => {
     try {
-      const response = await fetch(`${base}/auth/revalidate`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+      const response = await fetchWithTimeout(
+        `${base}/auth/revalidate`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ user_id: userId }),
         },
-        body: JSON.stringify({ user_id: userId }),
-      });
+        REVALIDATE_FETCH_TIMEOUT_MS,
+      );
 
       if (!response.ok) {
         const details = await readResponseDetails(response);

@@ -50,6 +50,7 @@ interface MarketDesktopBridge {
     getState(): Promise<OfflineState>;
     getSession(): Promise<OfflineSessionIpcResult | null>;
     login(params: OfflineLoginParams): Promise<OfflineLoginIpcResult>;
+    checkConnectivity(): Promise<{ connectivity: string }>;
   };
   bootstrap: {
     status(): Promise<BootstrapResult>;
@@ -140,6 +141,8 @@ const marketDesktop: MarketDesktopBridge = {
     getState: () => ipcRenderer.invoke(OFFLINE_CHANNELS.GET_STATE) as Promise<OfflineState>,
     getSession: () => ipcRenderer.invoke(OFFLINE_CHANNELS.GET_SESSION) as Promise<OfflineSessionIpcResult | null>,
     login: (params: OfflineLoginParams) => ipcRenderer.invoke(OFFLINE_CHANNELS.LOGIN, params) as Promise<OfflineLoginIpcResult>,
+    checkConnectivity: () =>
+      ipcRenderer.invoke(OFFLINE_CHANNELS.CHECK_CONNECTIVITY) as Promise<{ connectivity: string }>,
   },
   bootstrap: {
     status: () => ipcRenderer.invoke(BOOTSTRAP_CHANNELS.BOOTSTRAP_STATUS) as Promise<BootstrapResult>,

@@ -10,6 +10,7 @@ import type Database from "better-sqlite3";
 import type { IBootstrapRepository } from "../../domain/bootstrap/bootstrap-repository";
 import type { BootstrapSnapshot, BootstrapResult } from "../../domain/bootstrap/bootstrap";
 import { setConnectivityState } from "../../connectivity-state";
+import { fetchWithTimeout, BOOTSTRAP_FETCH_TIMEOUT_MS } from "../../fetch-timeout";
 
 export class BootstrapSqliteRepository implements IBootstrapRepository {
   constructor(private readonly getDb: () => Database.Database) {}
@@ -57,13 +58,17 @@ export class BootstrapSqliteRepository implements IBootstrapRepository {
     ).run();
 
     try {
-      const response = await fetch(`${apiBaseUrl}/sync/bootstrap`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+      const response = await fetchWithTimeout(
+        `${apiBaseUrl}/sync/bootstrap`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
         },
-      });
+        BOOTSTRAP_FETCH_TIMEOUT_MS,
+      );
 
       if (!response.ok) {
         const body = await response.text();
